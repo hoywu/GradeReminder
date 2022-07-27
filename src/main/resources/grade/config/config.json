@@ -1,0 +1,14 @@
+{
+  "studentID": [
+    "0000000001",
+    "0000000002"
+  ],
+  "debug": 0,
+  "cookie": [
+    "route=; JSESSIONID=",
+    "route=; JSESSIONID="
+  ],
+  "requestURL": "https://*****.*****.edu.cn/cjcx/cjcx_cxXsgrcj.html?doType=query&gnmkdm=N******&su=",
+  "tgBotUrl": "",
+  "checkDelay": 10000
+}

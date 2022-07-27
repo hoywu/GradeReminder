@@ -1,6 +1,5 @@
 package grade;
 
-import grade.util.PrintMessageUtil;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.jsoup.Jsoup;
@@ -19,17 +18,20 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class GradeReminder {
+	private static final String CONFIG_FILE_PATH = GradeReminder.class.getResource("").getPath() + "config/config.json";
+	private static final String POST_DATA = "&queryModel.showCount=5000&queryModel.currentPage=1";
+
 	public static void main(String[] args) {
-		PrintMessageUtil.printConfFilePath();
+		System.out.println("Configuration File PATH: " + CONFIG_FILE_PATH);
 		JSONObject configFile = readConfigFile();
 		if (configFile == null) {
 			System.out.println("Read configuration file ERROR.");
 			return;
 		}
 
-		Map<String, String> header = getHeader(configFile.getString("cookie"));
+		Map<String, String> header = getHeader("");
 
-		int notifyNum = 0;
+		int[] notifyNum = new int[configFile.getJSONArray("studentID").length()];
 		String tgBotUrl = configFile.getString("tgBotUrl");
 		StringBuilder score = new StringBuilder();
 		try {
@@ -37,60 +39,62 @@ public class GradeReminder {
 		} catch (Exception e) {
 			throw new RuntimeException(e);
 		}
+		DateTimeFormatter df = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+		LocalDateTime now;
 		while (true) {
-			DateTimeFormatter df = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-			LocalDateTime now = LocalDateTime.now();
+			now = LocalDateTime.now();
 			String time = "[" + df.format(now) + "]";
 			System.out.println(time);
 
-			Document res;
-			try {
-				res = Jsoup.connect(configFile.getString("requestUrl")).headers(header).ignoreContentType(true).post();
-			} catch (Exception e) {
-				System.out.println(e);
-				printDelay(configFile.getInt("checkDelay"));
-				continue;
-			}
-			JSONObject json = new JSONObject(res.body().ownText());
-			JSONArray items = json.getJSONArray("items");
-
-			if (configFile.getInt("debug") == 1) {
-				debugFileOutput(json);
-			}
-
-			double xf = 0;
-			double jd = 0;
-			score.delete(0, score.length());
-			for (int i = 0; i < items.length(); i++) {
-				JSONObject jsonObject = items.getJSONObject(i);
-				score.append(jsonObject.getString("bfzcj")).append("\t");
-				score.append(jsonObject.getString("kcmc")).append("\n");
-				xf += Double.parseDouble(jsonObject.getString("xf"));
-				jd += Double.parseDouble(jsonObject.getString("xf")) * Double.parseDouble(jsonObject.getString("jd"));
-			}
-			score.append("Current GPA: ").append(String.format("%.2f", jd / xf)).append("\n");
-			System.out.print(score);
-
-			if (!tgBotUrl.isBlank() && items.length() != notifyNum) {
-				notifyNum = items.length();
+			for (int i = 0; i < configFile.getJSONArray("studentID").length(); i++) {
+				Document res;
 				try {
-					System.out.println("Push Notification...");
-					Jsoup.connect(tgBotUrl + "&text=" + URLEncoder.encode(time + "\n" + score, StandardCharsets.UTF_8)).ignoreContentType(true).post();
-				} catch (IOException e) {
-					System.out.println("Notification push failed: " + e.getMessage());
+					header.replace("cookie", configFile.getJSONArray("cookie").getString(i));
+					res = Jsoup.connect(configFile.getString("requestURL") + configFile.getJSONArray("studentID").getString(i) + POST_DATA).headers(header).ignoreContentType(true).post();
+				} catch (Exception e) {
+					System.out.println(e);
+					printDelay(configFile.getInt("checkDelay"));
+					continue;
+				}
+				JSONObject json = new JSONObject(res.body().ownText());
+				JSONArray items = json.getJSONArray("items");
+
+				if (configFile.getInt("debug") == 1) {
+					debugFileOutput(json);
+				}
+
+				double xf = 0;
+				double jd = 0;
+				score.delete(0, score.length());
+				score.append("[").append(items.getJSONObject(0).getString("xm")).append("]\n");
+				for (int j = 0; j < items.length(); j++) {
+					JSONObject jsonObject = items.getJSONObject(j);
+					score.append(jsonObject.getString("bfzcj")).append("\t");
+					score.append(jsonObject.getString("kcmc")).append("\n");
+					xf += Double.parseDouble(jsonObject.getString("xf"));
+					jd += Double.parseDouble(jsonObject.getString("xf")) * Double.parseDouble(jsonObject.getString("jd"));
+				}
+				score.append("Current GPA: ").append(String.format("%.2f", jd / xf)).append("\n");
+				System.out.print(score);
+
+				if (!tgBotUrl.isBlank() && items.length() != notifyNum[i]) {
+					notifyNum[i] = items.length();
+					try {
+						System.out.println("Push Notification...");
+						Jsoup.connect(tgBotUrl + "&text=" + URLEncoder.encode(time + "\n" + score, StandardCharsets.UTF_8)).ignoreContentType(true).post();
+					} catch (IOException e) {
+						System.out.println("Notification push failed: " + e.getMessage());
+					}
+				}
+
+				try {
+					Thread.sleep(1000);
+				} catch (InterruptedException e) {
+					throw new RuntimeException(e);
 				}
 			}
 
 			printDelay(configFile.getInt("checkDelay"));
-		}
-	}
-
-	private static void printDelay(long millis) {
-		System.out.println("=".repeat(15) + "Wait " + millis + "ms" + "=".repeat(15));
-		try {
-			Thread.sleep(millis);
-		} catch (InterruptedException e) {
-			throw new RuntimeException(e);
 		}
 	}
 
@@ -99,8 +103,9 @@ public class GradeReminder {
 		File configFile = new File(filePath + "config/config.json");
 		if (!configFile.exists()) {
 			JSONObject jsonObject = new JSONObject();
-			jsonObject.put("requestUrl", "");
-			jsonObject.put("cookie", "");
+			jsonObject.put("requestURL", "https://*****.*****.edu.cn/cjcx/cjcx_cxXsgrcj.html?doType=query&gnmkdm=N******&su=");
+			jsonObject.put("cookie", new JSONArray().put(0, "route=; JSESSIONID=").put(1, "route=; JSESSIONID="));
+			jsonObject.put("studentID", new JSONArray().put(0, "0000000001").put(1, "0000000002"));
 			jsonObject.put("checkDelay", 10000);
 			jsonObject.put("debug", 0);
 			jsonObject.put("tgBotUrl", "");
@@ -110,7 +115,7 @@ public class GradeReminder {
 				}
 				configFile.createNewFile();
 				OutputStreamWriter osw = new OutputStreamWriter(new FileOutputStream(filePath + "config/config.json"), StandardCharsets.UTF_8);
-				osw.write(jsonObject.toString());
+				osw.write(jsonObject.toString(4));
 				osw.flush();
 				osw.close();
 			} catch (IOException e) {
@@ -178,7 +183,16 @@ public class GradeReminder {
 		return header;
 	}
 
-	private static void disableSSLCertCheck() throws NoSuchAlgorithmException, KeyManagementException {
+	private static void printDelay(long millis) {
+		System.out.println("=".repeat(15) + "Wait " + millis + "ms" + "=".repeat(15));
+		try {
+			Thread.sleep(millis);
+		} catch (InterruptedException e) {
+			throw new RuntimeException(e);
+		}
+	}
+
+	public static void disableSSLCertCheck() throws NoSuchAlgorithmException, KeyManagementException {
 		// Create a trust manager that does not validate certificate chains
 		TrustManager[] trustAllCerts = new TrustManager[]{new X509TrustManager() {
 			public java.security.cert.X509Certificate[] getAcceptedIssuers() {
