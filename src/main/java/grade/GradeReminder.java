@@ -19,18 +19,26 @@ import java.util.Map;
 
 public class GradeReminder {
 	private static final String CONFIG_FILE_PATH = GradeReminder.class.getResource("").getPath() + "config/config.json";
+	/**
+	 * 默认只返回10个科目的成绩，添加这个参数获取所有科目成绩
+	 */
 	private static final String POST_DATA = "&queryModel.showCount=5000&queryModel.currentPage=1";
 
 	public static void main(String[] args) {
-		System.out.println("Configuration File PATH: " + CONFIG_FILE_PATH);
+		//System.out.println("Configuration File PATH: " + CONFIG_FILE_PATH);
+
+		/*读取配置文件*/
 		JSONObject configFile = readConfigFile();
 		if (configFile == null) {
 			System.out.println("Read configuration file ERROR.");
 			return;
 		}
 
+		/*生成请求头*/
+		/*为了支持同时查询不同学号，cookie改为在下面读取，故此处留空*/
 		Map<String, String> header = getHeader("");
 
+		//notifyNum存储已有成绩的科目数量，在有变化时推送到tgBot，为了支持多用户改为数组
 		int[] notifyNum = new int[configFile.getJSONArray("studentID").length()];
 		String tgBotUrl = configFile.getString("tgBotUrl");
 		StringBuilder score = new StringBuilder();
@@ -46,13 +54,18 @@ public class GradeReminder {
 			String time = "[" + df.format(now) + "]";
 			System.out.println(time);
 
+			//循环查询配置文件中所有学号的成绩
 			for (int i = 0; i < configFile.getJSONArray("studentID").length(); i++) {
+				/*从教务系统接口获得原始数据*/
 				Document res;
 				try {
+					//替换请求头中的cookie为对应学号的
 					header.replace("cookie", configFile.getJSONArray("cookie").getString(i));
+					//发送POST请求，这个接口应该返回一个JSON数据
 					res = Jsoup.connect(configFile.getString("requestURL") + configFile.getJSONArray("studentID").getString(i) + POST_DATA).headers(header).ignoreContentType(true).post();
 				} catch (Exception e) {
-					System.out.println(e);
+					System.out.println(e.getMessage());
+					//可能出现网络错误，延迟后下一轮重新查询
 					printDelay(configFile.getInt("checkDelay"));
 					continue;
 				}
@@ -63,20 +76,22 @@ public class GradeReminder {
 					debugFileOutput(json);
 				}
 
-				double xf = 0;
-				double jd = 0;
+				/*从JSON中取出每个科目的成绩*/
+				double xf = 0; //学分
+				double jd = 0; //绩点
 				score.delete(0, score.length());
-				score.append("[").append(items.getJSONObject(0).getString("xm")).append("]\n");
+				score.append("[").append(items.getJSONObject(0).getString("xm")).append("]\n"); //学生姓名
 				for (int j = 0; j < items.length(); j++) {
 					JSONObject jsonObject = items.getJSONObject(j);
-					score.append(jsonObject.getString("bfzcj")).append("\t");
-					score.append(jsonObject.getString("kcmc")).append("\n");
+					score.append(jsonObject.getString("bfzcj")).append("\t"); //百分制成绩
+					score.append(jsonObject.getString("kcmc")).append("\n"); //课程名称
 					xf += Double.parseDouble(jsonObject.getString("xf"));
 					jd += Double.parseDouble(jsonObject.getString("xf")) * Double.parseDouble(jsonObject.getString("jd"));
 				}
 				score.append("Current GPA: ").append(String.format("%.2f", jd / xf)).append("\n");
 				System.out.print(score);
 
+				/*推送成绩更新到tgBot*/
 				if (!tgBotUrl.isBlank() && items.length() != notifyNum[i]) {
 					notifyNum[i] = items.length();
 					try {
@@ -87,6 +102,7 @@ public class GradeReminder {
 					}
 				}
 
+				/*等待1s后查询下一个学号的成绩*/
 				try {
 					Thread.sleep(1000);
 				} catch (InterruptedException e) {
@@ -94,13 +110,13 @@ public class GradeReminder {
 				}
 			}
 
+			//等待进入下一轮查询
 			printDelay(configFile.getInt("checkDelay"));
 		}
 	}
 
 	private static JSONObject readConfigFile() {
-		String filePath = GradeReminder.class.getResource("").getPath();
-		File configFile = new File(filePath + "config/config.json");
+		File configFile = new File(CONFIG_FILE_PATH);
 		if (!configFile.exists()) {
 			JSONObject jsonObject = new JSONObject();
 			jsonObject.put("requestURL", "https://*****.*****.edu.cn/cjcx/cjcx_cxXsgrcj.html?doType=query&gnmkdm=N******&su=");
@@ -114,7 +130,7 @@ public class GradeReminder {
 					configFile.getParentFile().mkdirs();
 				}
 				configFile.createNewFile();
-				OutputStreamWriter osw = new OutputStreamWriter(new FileOutputStream(filePath + "config/config.json"), StandardCharsets.UTF_8);
+				OutputStreamWriter osw = new OutputStreamWriter(new FileOutputStream(CONFIG_FILE_PATH), StandardCharsets.UTF_8);
 				osw.write(jsonObject.toString(4));
 				osw.flush();
 				osw.close();
