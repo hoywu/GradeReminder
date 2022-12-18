@@ -1,9 +1,10 @@
 package grade;
 
+import com.devccv.util.network.RequestResult;
+import com.devccv.util.network.SimpleHttps;
+import com.devccv.util.push.WeChatPush;
 import org.json.JSONArray;
 import org.json.JSONObject;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
 
 import javax.net.ssl.*;
 import java.io.*;
@@ -14,34 +15,61 @@ import java.security.NoSuchAlgorithmException;
 import java.security.cert.X509Certificate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class GradeReminder {
-    private static final String CONFIG_FILE_PATH = GradeReminder.class.getResource("").getPath() + "config/config.json";
+    /*private static String getPath() {
+        String path = GradeReminder.class.getProtectionDomain().getCodeSource().getLocation().getPath();
+        if (System.getProperty("os.name").contains("dows")) {
+            path = path.substring(1);
+        }
+        if (path.contains("jar")) {
+            path = path.substring(0, path.lastIndexOf("."));
+            return path.substring(0, path.lastIndexOf("/"));
+        }
+        return path.replace("target/classes/", "");
+    }*/
+    //    private static final String CONFIG_FILE_PATH = Path.of(getPath(), "config.json").toString();
+    /**
+     * 配置文件路径
+     */
+    private static final String CONFIG_FILE_PATH = "config.json";
     /**
      * 默认只返回10个科目的成绩，添加这个参数获取所有科目成绩
      */
     private static final String POST_DATA = "&queryModel.showCount=5000&queryModel.currentPage=1";
 
     public static void main(String[] args) {
-        //System.out.println("Configuration File PATH: " + CONFIG_FILE_PATH);
+        System.out.println("Configuration File PATH: " + CONFIG_FILE_PATH);
 
         /*读取配置文件*/
         JSONObject configFile = readConfigFile();
         if (configFile == null) {
-            System.out.println("Read configuration file ERROR.");
+            System.out.println("Read configuration file ERROR." + "\n" + CONFIG_FILE_PATH);
             return;
         }
 
         /*生成请求头*/
-        /*为了支持同时查询不同学号，cookie改为在下面读取，故此处留空*/
+        /*为了支持同时查询不同学号，cookie改为在下面读取，此处留空*/
         Map<String, String> header = getHeader("");
+
+        //准备微信推送组件
+        WeChatPush weChatPush = null;
+        JSONArray PushTargetByUserID = null;
+        try {
+            JSONObject weChatPushJson = configFile.getJSONObject("WeChatPush");
+            JSONObject wxPushConfig = weChatPushJson.getJSONObject("config");
+            weChatPush = new WeChatPush(wxPushConfig.getString("corpId"), wxPushConfig.getInt("agentID"), wxPushConfig.getString("corpSecret"));
+            PushTargetByUserID = weChatPushJson.getJSONArray("PushTargetByUserID");
+        } catch (Exception ignored) {
+        }
+
+        boolean[] firstUpdate = new boolean[configFile.getJSONArray("studentID").length()];
+        Arrays.fill(firstUpdate, true);
 
         //notifyNum存储已有成绩的科目数量，在有变化时推送到tgBot，为了支持多用户改为数组
         int[] notifyNum = new int[configFile.getJSONArray("studentID").length()];
         String tgBotUrl = configFile.getString("tgBotUrl");
-        StringBuilder score = new StringBuilder();
         try {
             disableSSLCertCheck();
         } catch (Exception e) {
@@ -57,48 +85,89 @@ public class GradeReminder {
             //循环查询配置文件中所有学号的成绩
             for (int i = 0; i < configFile.getJSONArray("studentID").length(); i++) {
                 /*从教务系统接口获得原始数据*/
-                Document res;
-                try {
-                    //替换请求头中的cookie为对应学号的
-                    header.replace("cookie", configFile.getJSONArray("cookie").getString(i));
-                    //发送POST请求，这个接口应该返回一个JSON数据
-                    res = Jsoup.connect(configFile.getString("requestURL") + configFile.getJSONArray("studentID").getString(i) + POST_DATA).headers(header).ignoreContentType(true).post();
-                } catch (Exception e) {
-                    System.out.println(e.getMessage());
+                RequestResult res;
+                //替换请求头中的cookie为对应学号的
+                header.replace("cookie", configFile.getJSONArray("cookie").getString(i));
+                //发送POST请求，这个接口应该返回一个JSON数据
+                res = SimpleHttps.POST(configFile.getString("requestURL") + configFile.getJSONArray("studentID").getString(i) + POST_DATA, header);
+                if (!res.isSucceed()) {
+                    System.out.println(res.getErrorMsg());
                     //可能出现网络错误，延迟后下一轮重新查询
                     printDelay(configFile.getInt("checkDelay"));
                     continue;
                 }
-                JSONObject json = new JSONObject(res.body().ownText());
+                JSONObject json = new JSONObject(res.getResponse());
                 JSONArray items = json.getJSONArray("items");
 
                 if (configFile.getInt("debug") == 1) {
                     debugFileOutput(json);
                 }
 
+                class ScoreItem implements Comparable<ScoreItem> {
+                    int score;
+                    double credit;
+                    String name;
+
+                    public ScoreItem(int score, double credit, String name) {
+                        this.score = score;
+                        this.credit = credit;
+                        this.name = name;
+                    }
+
+                    @Override
+                    public String toString() {
+                        return score + "\t" + name + "[" + credit + "]";
+                    }
+
+                    @Override
+                    public int compareTo(ScoreItem o) {
+                        //按分数排序
+                        int scoreDiff = o.score - this.score;
+                        if (scoreDiff != 0) {
+                            return scoreDiff;
+                        }
+                        return (int) Math.ceil(o.credit - this.credit);
+                    }
+                }
                 /*从JSON中取出每个科目的成绩*/
                 double xf = 0; //学分
                 double jd = 0; //绩点
-                score.delete(0, score.length());
+                List<ScoreItem> scoreItemArray = new ArrayList<>();
+                StringBuilder score = new StringBuilder();
                 score.append("[").append(items.getJSONObject(0).getString("xm")).append("]\n"); //学生姓名
                 for (int j = 0; j < items.length(); j++) {
                     JSONObject jsonObject = items.getJSONObject(j);
-                    score.append(jsonObject.getString("bfzcj")).append("\t"); //百分制成绩
-                    score.append(jsonObject.getString("kcmc")).append("\n"); //课程名称
+                    scoreItemArray.add(new ScoreItem(Integer.parseInt(jsonObject.getString("bfzcj")),
+                            Double.parseDouble(jsonObject.getString("xf")), jsonObject.getString("kcmc")));
+                    //score.append(jsonObject.getString("bfzcj")).append("\t"); //百分制成绩
+                    //score.append(jsonObject.getString("kcmc")).append("\n"); //课程名称
                     xf += Double.parseDouble(jsonObject.getString("xf"));
                     jd += Double.parseDouble(jsonObject.getString("xf")) * Double.parseDouble(jsonObject.getString("jd"));
+                }
+                Collections.sort(scoreItemArray); //排序成绩
+                for (ScoreItem item : scoreItemArray) {
+                    score.append(item).append("\n");
                 }
                 score.append("Current GPA: ").append(String.format("%.2f", jd / xf)).append("\n");
                 System.out.print(score);
 
-                /*推送成绩更新到tgBot*/
-                if (!tgBotUrl.isBlank() && items.length() != notifyNum[i]) {
+                /*推送模块：检查成绩是否有更新*/
+                if (firstUpdate[i]) {
+                    firstUpdate[i] = false;
                     notifyNum[i] = items.length();
-                    try {
-                        System.out.println("Push Notification...");
-                        Jsoup.connect(tgBotUrl + "&text=" + URLEncoder.encode(time + "\n" + score, StandardCharsets.UTF_8)).ignoreContentType(true).post();
-                    } catch (IOException e) {
-                        System.out.println("Notification push failed: " + e.getMessage());
+                } else if (!tgBotUrl.isBlank() && items.length() != notifyNum[i]) {
+                    notifyNum[i] = items.length();
+                    System.out.println("Push Notification...");
+                    /*推送成绩更新到tgBot*/
+                    RequestResult result = SimpleHttps.POST(tgBotUrl + "&text=" + URLEncoder.encode(time + "\n" + score, StandardCharsets.UTF_8));
+                    if (!result.isSucceed()) {
+                        System.out.println("Notification push failed: " + result.getErrorMsg());
+                    }
+
+                    /*推送成绩更新到微信*/
+                    if (weChatPush != null && PushTargetByUserID != null) {
+                        weChatPush.setPushTargetByUserID(List.of(PushTargetByUserID.getString(i)));
+                        weChatPush.pushTextMessage(time + "\n" + score);
                     }
                 }
 
@@ -125,6 +194,7 @@ public class GradeReminder {
             jsonObject.put("checkDelay", 10000);
             jsonObject.put("debug", 0);
             jsonObject.put("tgBotUrl", "");
+            jsonObject.put("WeChatPush", new JSONObject().put("config", new JSONObject().put("corpId", "").put("agentID", 0).put("corpSecret", "")).put("PushTargetByUserID", new JSONArray().put("").put("")));
             try {
                 if (!configFile.getParentFile().exists()) {
                     configFile.getParentFile().mkdirs();
@@ -140,7 +210,7 @@ public class GradeReminder {
             return null;
         }
 
-        try (InputStream inputStream = GradeReminder.class.getResourceAsStream("config/config.json")) {
+        try (InputStream inputStream = new FileInputStream(configFile)) {
             byte[] bytes = inputStream.readAllBytes();
             String s = new String(bytes);
             return new JSONObject(s);

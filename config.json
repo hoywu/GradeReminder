@@ -10,5 +10,16 @@
   ],
   "requestURL": "https://*****.*****.edu.cn/cjcx/cjcx_cxXsgrcj.html?doType=query&gnmkdm=N******&su=",
   "tgBotUrl": "",
+  "WeChatPush": {
+    "PushTargetByUserID": [
+      "",
+      ""
+    ],
+    "config": {
+      "agentID": 0,
+      "corpId": "",
+      "corpSecret": ""
+    }
+  },
   "checkDelay": 10000
 }
