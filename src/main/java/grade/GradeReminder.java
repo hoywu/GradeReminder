@@ -89,7 +89,8 @@ public class GradeReminder {
                 //替换请求头中的cookie为对应学号的
                 header.replace("cookie", configFile.getJSONArray("cookie").getString(i));
                 //发送POST请求，这个接口应该返回一个JSON数据
-                res = SimpleHttps.POST(configFile.getString("requestURL") + configFile.getJSONArray("studentID").getString(i) + POST_DATA, header);
+                res = SimpleHttps.POST(new SimpleHttps.Argument(configFile.getString("requestURL") + configFile.getJSONArray("studentID").getString(i) + POST_DATA)
+                        .setRequestProperty(header));
                 if (!res.isSucceed()) {
                     System.out.println(res.getErrorMsg());
                     //可能出现网络错误，延迟后下一轮重新查询
