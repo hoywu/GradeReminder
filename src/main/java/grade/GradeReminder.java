@@ -39,7 +39,7 @@ public class GradeReminder {
      */
     private static final String POST_DATA = "&queryModel.showCount=5000&queryModel.currentPage=1";
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException {
         System.out.println("Configuration File PATH: " + CONFIG_FILE_PATH);
 
         /*读取配置文件*/
@@ -88,26 +88,35 @@ public class GradeReminder {
                 RequestResult res;
                 //替换请求头中的cookie为对应学号的
                 header.replace("cookie", configFile.getJSONArray("cookie").getString(i));
+                if (configFile.has("userAgent")) {
+                    header.replace("User-Agent", configFile.getString("userAgent"));
+                }
                 //发送POST请求，这个接口应该返回一个JSON数据
                 res = SimpleHttps.POST(new SimpleHttps.Argument(configFile.getString("requestURL") + configFile.getJSONArray("studentID").getString(i) + POST_DATA)
                         .setRequestProperty(header));
+
                 if (!res.isSucceed()) {
                     System.out.println(res.getErrorMsg());
+                    //res.getException().printStackTrace();
                     //可能出现网络错误，延迟后下一轮重新查询
-                    printDelay(configFile.getInt("checkDelay"));
-                    continue;
+                    break;
                 }
                 JSONObject json = new JSONObject(res.getResponse());
                 JSONArray items = json.getJSONArray("items");
+                if (items.length() < 1) {
+                    //没有成绩，延迟后下一轮重新查询
+                    System.out.println("No grades yet.");
+                    break;
+                }
 
                 if (configFile.getInt("debug") == 1) {
                     debugFileOutput(json);
                 }
 
                 class ScoreItem implements Comparable<ScoreItem> {
-                    int score;
-                    double credit;
-                    String name;
+                    final int score;
+                    final double credit;
+                    final String name;
 
                     public ScoreItem(int score, double credit, String name) {
                         this.score = score;
@@ -156,13 +165,16 @@ public class GradeReminder {
                 if (firstUpdate[i]) {
                     firstUpdate[i] = false;
                     notifyNum[i] = items.length();
-                } else if (!tgBotUrl.isBlank() && items.length() != notifyNum[i]) {
-                    notifyNum[i] = items.length();
-                    System.out.println("Push Notification...");
-                    /*推送成绩更新到tgBot*/
-                    RequestResult result = SimpleHttps.POST(tgBotUrl + "&text=" + URLEncoder.encode(time + "\n" + score, StandardCharsets.UTF_8));
-                    if (!result.isSucceed()) {
-                        System.out.println("Notification push failed: " + result.getErrorMsg());
+                } else if (items.length() != notifyNum[i]) {
+                    /*推送成绩更新到Telegram*/
+                    if (tgBotUrl != null && !tgBotUrl.isBlank()) {
+                        notifyNum[i] = items.length();
+                        System.out.println("Push Notification...");
+                        /*推送成绩更新到tgBot*/
+                        RequestResult result = SimpleHttps.POST(tgBotUrl + "&text=" + URLEncoder.encode(time + "\n" + score, StandardCharsets.UTF_8));
+                        if (!result.isSucceed()) {
+                            System.out.println("Notification push failed: " + result.getErrorMsg());
+                        }
                     }
 
                     /*推送成绩更新到微信*/
@@ -186,6 +198,25 @@ public class GradeReminder {
     }
 
     private static JSONObject readConfigFile() {
+        if (System.getenv("DOCKER") != null && System.getenv("DOCKER").equals("true")) {
+            JSONObject jsonObject = new JSONObject();
+            jsonObject.put("requestURL", System.getenv("requestURL"));
+            jsonObject.put("cookie", new JSONArray(System.getenv("cookie").replaceAll("\"", "").split(",")));
+            jsonObject.put("studentID", new JSONArray(System.getenv("studentID").replaceAll("\"", "").split(",")));
+            jsonObject.put("checkDelay", Integer.parseInt(System.getenv("checkDelay")));
+            jsonObject.put("debug", Integer.parseInt(System.getenv("debug")));
+            if (System.getenv("tgBotUrl") != null) jsonObject.put("tgBotUrl", System.getenv("tgBotUrl"));
+            else jsonObject.put("tgBotUrl", "");
+            if (System.getenv("PushTargetByUserID") != null) {
+                jsonObject.put("WeChatPush", new JSONObject().put("config", new JSONObject()
+                        .put("corpId", System.getenv("corpId"))
+                        .put("agentID", Integer.parseInt(System.getenv("agentID")))
+                        .put("corpSecret", System.getenv("corpSecret"))
+                ).put("PushTargetByUserID", new JSONArray(System.getenv("PushTargetByUserID").split(","))));
+            }
+            if (System.getenv("userAgent") != null) jsonObject.put("userAgent", System.getenv("userAgent"));
+            return jsonObject;
+        }
         File configFile = new File(CONFIG_FILE_PATH);
         if (!configFile.exists()) {
             JSONObject jsonObject = new JSONObject();
@@ -195,7 +226,9 @@ public class GradeReminder {
             jsonObject.put("checkDelay", 10000);
             jsonObject.put("debug", 0);
             jsonObject.put("tgBotUrl", "");
-            jsonObject.put("WeChatPush", new JSONObject().put("config", new JSONObject().put("corpId", "").put("agentID", 0).put("corpSecret", "")).put("PushTargetByUserID", new JSONArray().put("").put("")));
+            jsonObject.put("WeChatPush", new JSONObject().put("config", new JSONObject()
+                    .put("corpId", "").put("agentID", 0).put("corpSecret", "")
+            ).put("PushTargetByUserID", new JSONArray().put("").put("")));
             try {
                 if (!configFile.getParentFile().exists()) {
                     configFile.getParentFile().mkdirs();
@@ -245,27 +278,20 @@ public class GradeReminder {
     private static Map<String, String> getHeader(String cookie) {
         Map<String, String> header = new HashMap<>();
         header.put("Accept", "application/json, text/javascript, */*; q=0.01");
-        header.put("Accept-Encoding", "gzip, deflate, br");
+        //header.put("Accept-Encoding", "gzip, deflate, br");
         header.put("Accept-Language", "zh-cn,zh;q=0.5");
-        header.put("Cache-Control", "no-cache");
         header.put("Connection", "keep-alive");
-        header.put("Content-Length", "148");
         header.put("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8");
         header.put("cookie", cookie);
         header.put("DNT", "1");
-        //header.put("Host", "*****.*****.edu.cn");
-        //header.put("Origin", "https://*****.*****.edu.cn");
-        header.put("Pragma", "no-cache");
-        //header.put("Referer", "https://*****.*****.edu.cn/cjcx/cjcx_cxDgXscj.html?gnmkdm=N******&layout=default&su=**********");
-        header.put("sec-ch-ua", "\" Not;A Brand\";v=\"99\", \"Microsoft Edge\";v=\"103\", \"Chromium\";v=\"103\"");
+        header.put("sec-ch-ua", "\"Google Chrome\";v=\"108\", \"Chromium\";v=\"108\", \"Not=A?Brand\";v=\"24\"");
         header.put("sec-ch-ua-mobile", "?0");
         header.put("sec-ch-ua-platform", "\"Windows\"");
         header.put("Sec-Fetch-Dest", "empty");
         header.put("Sec-Fetch-Mode", "cors");
         header.put("Sec-Fetch-Site", "same-origin");
         header.put("sec-gpc", "1");
-        header.put("Upgrade-Insecure-Requests", "1");
-        header.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.5060.66 Safari/537.36 Edg/103.0.1264.44");
+        header.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.5060.66 Safari/537.36 Edg/103.0.1264.44");
         header.put("X-Requested-With", "XMLHttpRequest");
         return header;
     }
