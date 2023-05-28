@@ -88,6 +88,7 @@ public class GradeReminder {
                 RequestResult res;
                 //替换请求头中的cookie为对应学号的
                 header.replace("cookie", configFile.getJSONArray("cookie").getString(i));
+                //指定User-Agent（如果有）
                 if (configFile.has("userAgent")) {
                     header.replace("User-Agent", configFile.getString("userAgent"));
                 }
@@ -229,6 +230,7 @@ public class GradeReminder {
             jsonObject.put("WeChatPush", new JSONObject().put("config", new JSONObject()
                     .put("corpId", "").put("agentID", 0).put("corpSecret", "")
             ).put("PushTargetByUserID", new JSONArray().put("").put("")));
+            jsonObject.put("userAgent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.5060.66 Safari/537.36 Edg/103.0.1264.44");
             try {
                 if (!configFile.getParentFile().exists()) {
                     configFile.getParentFile().mkdirs();

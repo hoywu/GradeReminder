@@ -1,6 +1,7 @@
 FROM amazoncorretto:17-alpine3.17
 LABEL authors="hoywu"
 
+ENV TZ=Asia/Shanghai
 ENV DOCKER=true
 ENV debug=0
 
