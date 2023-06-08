@@ -106,6 +106,10 @@ public class GradeReminder {
                 JSONArray items = json.getJSONArray("items");
                 if (items.length() < 1) {
                     //没有成绩，延迟后下一轮重新查询
+                    if (firstUpdate[i]) {
+                        firstUpdate[i] = false;
+                        notifyNum[i] = items.length();
+                    }
                     System.out.println("No grades yet.");
                     break;
                 }
